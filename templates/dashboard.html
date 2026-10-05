@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetWatch</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{--bg:#e9edf0;--panel:#f7f9fa;--ink:#14212b;--mute:#5b6b78;--line:#cdd5db;
+--ok:#2f7f79;--low:#7a8a96;--medium:#b7791f;--high:#d9480f;--critical:#b3261e}
+@media (prefers-color-scheme:dark){:root{--bg:#10181e;--panel:#17222a;--ink:#e6ecf0;--mute:#8fa1ad;--line:#2b3943;
+--ok:#4fb3aa;--low:#8fa1ad;--medium:#e0a93b;--high:#f2753a;--critical:#ff6b60}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 ui-sans-serif,system-ui,"Segoe UI",Roboto,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:12px 32px;align-items:baseline;padding:20px 28px 8px}
+h1{font-size:22px;margin:0;letter-spacing:-.01em}
+#status{color:var(--mute)}
+main{padding:0 28px 40px;display:grid;gap:20px}
+.panel{background:var(--panel);border:1px solid var(--line);padding:16px 18px}
+h2{font-size:15px;margin:0 0 10px;font-weight:600}
+.stats{display:flex;flex-wrap:wrap;gap:8px 36px}
+.stat b{font-size:26px;font-weight:600;display:block;line-height:1.1}
+.stat span{color:var(--mute);font-size:13px}
+#strip{display:flex;gap:2px;height:34px;align-items:stretch}
+#strip i{flex:1;min-width:2px;background:var(--ok);opacity:.55}
+#strip i.bad{background:var(--critical);opacity:1}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:20px}
+canvas{max-height:220px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{text-align:left;color:var(--mute);font-weight:500;padding:6px 8px;border-bottom:1px solid var(--line)}
+td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+.sev{font-weight:600}.sev.low{color:var(--low)}.sev.medium{color:var(--medium)}.sev.high{color:var(--high)}.sev.critical{color:var(--critical)}
+.scroll{overflow-x:auto}
+select{font:inherit;background:var(--panel);color:var(--ink);border:1px solid var(--line);padding:3px 6px}
+.empty{color:var(--mute);padding:12px 0}
+</style>
+</head>
+<body>
+<header>
+  <h1>NetWatch</h1>
+  <span id="status">Loading…</span>
+  <label>Show last <select id="range"><option value="15">15 min</option><option value="60" selected>1 hour</option><option value="360">6 hours</option></select></label>
+</header>
+<main>
+  <section class="panel">
+    <div class="stats" id="stats"></div>
+  </section>
+  <section class="panel">
+    <h2>Each block is a 10-second window. Red means something was flagged.</h2>
+    <div id="strip" aria-label="Anomaly timeline"></div>
+  </section>
+  <section class="cols">
+    <div class="panel"><h2>Packets per second</h2><canvas id="c1"></canvas></div>
+    <div class="panel"><h2>Bytes per second</h2><canvas id="c2"></canvas></div>
+    <div class="panel"><h2>SYN, DNS, ICMP and ARP packets per window</h2><canvas id="c3"></canvas></div>
+  </section>
+  <section class="panel scroll"><h2>Latest alerts</h2><table id="alerts"></table></section>
+  <section class="panel scroll"><h2>Devices on the network</h2><table id="devices"></table></section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const get = async u => (await fetch(u)).json();
+const fmt = ts => new Date(ts * 1000).toLocaleString([], {hour:"2-digit", minute:"2-digit", second:"2-digit", month:"short", day:"numeric"});
+const charts = {};
+
+function chart(id, series) {
+  charts[id] = new Chart($(id), {
+    type: "line",
+    data: {labels: [], datasets: series.map(s => ({label: s.label, data: [], borderColor: css(s.color), borderWidth: 1.5, tension: .2, pointRadius: 0}))},
+    options: {animation: false, responsive: true, interaction: {mode: "index", intersect: false},
+      plugins: {legend: {display: series.length > 1}},
+      scales: {x: {ticks: {maxTicksLimit: 6}}, y: {beginAtZero: true}}}
+  });
+}
+chart("c1", [{label: "packets/s", color: "--ok"}]);
+chart("c2", [{label: "bytes/s", color: "--high"}]);
+chart("c3", [{label: "SYN", color: "--critical"}, {label: "DNS", color: "--ok"}, {label: "ICMP", color: "--medium"}, {label: "ARP", color: "--low"}]);
+
+function setChart(id, labels, cols, bad) {
+  const c = charts[id];
+  c.data.labels = labels;
+  cols.forEach((d, i) => c.data.datasets[i].data = d);
+  if (cols.length === 1) {  // mark flagged windows on single-series charts
+    c.data.datasets[0].pointRadius = bad.map(b => b ? 4 : 0);
+    c.data.datasets[0].pointBackgroundColor = css("--critical");
+  }
+  c.update();
+}
+
+function table(el, head, rows) {
+  $(el).innerHTML = rows.length
+    ? `<tr>${head.map(h => `<th>${h}</th>`).join("")}</tr>` + rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join("")}</tr>`).join("")
+    : `<tr><td class="empty">Nothing yet.</td></tr>`;
+}
+
+async function refresh() {
+  try {
+    const [s, w, a, d] = await Promise.all([get("/api/summary"), get(`/api/windows?minutes=${$("range").value}`), get("/api/alerts?limit=50"), get("/api/devices")]);
+    const sev = s.by_severity, hi = (sev.critical || 0) + (sev.high || 0);
+    $("status").textContent = s.learning ? `Learning what normal looks like (${s.windows} of ${s.learn_target} windows)` : "Watching";
+    $("stats").innerHTML = [[s.alerts_total, "alerts total"], [hi, "high or critical"], [s.devices, "devices seen"], [s.windows, "windows analysed"]]
+      .map(([n, l]) => `<div class="stat"><b>${n}</b><span>${l}</span></div>`).join("");
+    $("strip").innerHTML = w.map(x => `<i class="${x.anomalous ? "bad" : ""}" title="${esc(fmt(x.ts))}"></i>`).join("");
+    const labels = w.map(x => new Date(x.ts * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}));
+    const bad = w.map(x => x.anomalous);
+    setChart("c1", labels, [w.map(x => x.pps)], bad);
+    setChart("c2", labels, [w.map(x => x.bps)], bad);
+    setChart("c3", labels, ["syn", "dns", "icmp", "arp"].map(k => w.map(x => x[k])), bad);
+    table("alerts", ["Time", "Severity", "Type", "Source", "Details", "Phone"],
+      a.map(x => [esc(fmt(x.ts)), `<span class="sev ${esc(x.severity)}">${esc(x.severity)}</span>`, esc(x.kind), esc(x.src), esc(x.detail), x.notified ? "sent" : ""]));
+    table("devices", ["MAC", "IP", "First seen", "Last seen"], d.map(x => [esc(x.mac), esc(x.ip), esc(fmt(x.first_seen)), esc(fmt(x.last_seen))]));
+  } catch (e) { $("status").textContent = "Can't reach the NetWatch server. Retrying…"; }
+}
+$("range").onchange = refresh;
+refresh(); setInterval(refresh, 5000);
+</script>
+</body>
+</html>

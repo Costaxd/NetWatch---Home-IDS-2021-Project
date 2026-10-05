@@ -1,6 +1,12 @@
-# NetWatch---Home-IDS-2021-Project
-A small network traffic anomaly detector from 2021. It sniffs packets with **Scapy**, learns what normal looks like, flags suspicious behaviour, stores everything in **SQLite**, shows it on a **Flask** dashboard and pushes alerts to your **phone**.
+# NetWatch
 
+A small network traffic anomaly detector. It sniffs packets with **Scapy**, learns what normal looks like, flags suspicious behaviour, stores everything in **SQLite**, shows it on a **Flask** dashboard and pushes alerts to your **phone**.
+
+```
+ packets ──► Scapy sniffer ──► 10s window features ──► detectors ──► SQLite ──► Flask dashboard
+ (live / pcap / demo)             pps, bytes, SYN, DNS,   rules + EWMA            │
+                                  ARP, ICMP, per-host     z-score baseline        └──► ntfy / Telegram push
+```
 
 ## What it detects
 
@@ -83,3 +89,7 @@ docs/ANOMALIES.md
 ## Legal note
 
 Only monitor networks you own or are explicitly authorised to monitor. Capturing traffic on someone else's network may be illegal.
+
+## License
+
+MIT
